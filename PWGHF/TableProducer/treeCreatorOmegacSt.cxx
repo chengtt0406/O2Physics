@@ -67,6 +67,7 @@ DECLARE_SOA_COLUMN(DecayLengthCharmedBaryon, decayLengthCharmedBaryon, float);
 DECLARE_SOA_COLUMN(DecayLengthXYCharmedBaryon, decayLengthXYCharmedBaryon, float);
 DECLARE_SOA_COLUMN(DecayLengthCasc, decayLengthCasc, float);
 DECLARE_SOA_COLUMN(DecayLengthXYCasc, decayLengthXYCasc, float);
+DECLARE_SOA_COLUMN(OriginGen, originGen, int);
 } // namespace hf_st_charmed_baryon_gen
 
 DECLARE_SOA_TABLE(HfStChBarGens, "AOD", "HFSTCHBARGEN",
@@ -81,7 +82,8 @@ DECLARE_SOA_TABLE(HfStChBarGens, "AOD", "HFSTCHBARGEN",
                   hf_st_charmed_baryon_gen::DecayLengthCharmedBaryon,
                   hf_st_charmed_baryon_gen::DecayLengthXYCharmedBaryon,
                   hf_st_charmed_baryon_gen::DecayLengthCasc,
-                  hf_st_charmed_baryon_gen::DecayLengthXYCasc);
+                  hf_st_charmed_baryon_gen::DecayLengthXYCasc,
+                  hf_st_charmed_baryon_gen::OriginGen);
 
 // CharmedBaryon -> Casc + Pion
 //                   -> Lambda + BachPi/BachKa
@@ -138,6 +140,10 @@ DECLARE_SOA_COLUMN(DecayLengthCasc, decayLengthCasc, float);
 DECLARE_SOA_COLUMN(DecayLengthXYCasc, decayLengthXYCasc, float);
 DECLARE_SOA_INDEX_COLUMN_FULL(MotherCasc, motherCasc, int, HfStChBarGens, "_Casc");
 DECLARE_SOA_INDEX_COLUMN_FULL(MotherPion, motherPion, int, HfStChBarGens, "_Pion");
+DECLARE_SOA_COLUMN(FlagMcMatchRec, flagMcMatchRec, int); // reconstruction level
+DECLARE_SOA_COLUMN(DebugMcRec, debugMcRec, int);         // debug flag for mis-association reconstruction level
+DECLARE_SOA_COLUMN(OriginRec, originRec, int);
+DECLARE_SOA_COLUMN(CollisionMatched, collisionMatched, bool);
 } // namespace hf_st_charmed_baryon
 
 DECLARE_SOA_TABLE(HfStChBars, "AOD", "HFSTCHBAR",
@@ -190,7 +196,11 @@ DECLARE_SOA_TABLE(HfStChBars, "AOD", "HFSTCHBAR",
                   hf_st_charmed_baryon::DecayLengthCasc,
                   hf_st_charmed_baryon::DecayLengthXYCasc,
                   hf_st_charmed_baryon::MotherCascId,
-                  hf_st_charmed_baryon::MotherPionId);
+                  hf_st_charmed_baryon::MotherPionId,
+                  hf_st_charmed_baryon::FlagMcMatchRec,
+                  hf_st_charmed_baryon::DebugMcRec,
+                  hf_st_charmed_baryon::OriginRec,
+                  hf_st_charmed_baryon::CollisionMatched);
 } // namespace o2::aod
 
 struct HfTreeCreatorOmegacSt {
@@ -306,6 +316,18 @@ struct HfTreeCreatorOmegacSt {
   // processMC: loop over MC objects
   // processData: loop over reconstructed objects, no MC information
   // processGen: loop over reconstructed objects, use MC information (mutually exclusive? combine?)
+  int indexRec = -1;
+  int indexRecCharmBaryon = -1;
+  int8_t sign = -9;
+  int8_t signCasc = -9;
+  int8_t signV0 = -9;
+  int8_t flag = 0;
+  int8_t origin = 0; // to be used for prompt/non prompt
+  McMatchFlag debug{McMatchFlag::None};
+  int8_t nPiToMuV0{0}, nPiToMuCasc{0}, nPiToMuOmegac0{0};
+  int8_t nKaToPiCasc{0}, nKaToPiOmegac0{0};
+  bool collisionMatched = false;
+  std::vector<int> idxBhadMothers{};
 
   void processMc(aod::McCollisions const&,
                  aod::McParticles const& mcParticles)
@@ -329,6 +351,9 @@ struct HfTreeCreatorOmegacSt {
             }
           }
           if ((idxPionDaughter >= 0) && (idxCascDaughter >= 0)) {
+            auto particle = mcParticles.rawIteratorAt(idxPionDaughter);
+            origin = RecoDecay::getCharmHadronOrigin(mcParticles, particle, false, &idxBhadMothers);
+               
             const auto& cascDaughter = mcParticles.iteratorAt(idxCascDaughter);
             const auto& mcColl = mcParticle.mcCollision();
             std::array<double, 3> primaryVertexPosGen = {mcColl.posX(), mcColl.posY(), mcColl.posZ()};
@@ -356,7 +381,8 @@ struct HfTreeCreatorOmegacSt {
               decayLengthGen,
               decayLengthXYGen,
               decayLengthCascGen,
-              decayLengthXYCascGen);
+              decayLengthXYCascGen,
+              origin);
             mapMcPartToGenTable[mcParticle.globalIndex()] = outputTableGen.lastIndex();
           }
         }
@@ -585,6 +611,51 @@ struct HfTreeCreatorOmegacSt {
                     const auto massXiC = RecoDecay::m(momenta, massesXicDaughters);
                     registry.fill(HIST("hMassOmegac"), massOmegaC);
                     registry.fill(HIST("hMassOmegacVsPt"), massOmegaC, RecoDecay::pt(momenta[0], momenta[1]));
+                      
+                    //--- do the MC Rec match
+                    auto arrayDaughters = std::array{trackId.template track_as<TracksExtMc>, // bachelor <- charm baryon
+                                                         casc.bachelor_as<TracksExtMc>(), // bachelor <- cascade
+                                                         V0.posTrack_as<TracksExtMc>(), // p <- lambda
+                                                         V0.negTrack_as<TracksExtMc> // pi <- lambda
+                                                          };
+                    auto arrayDaughtersCasc = std::array{casc.bachelor_as<TracksExtMc>(), // bachelor <- cascade
+                                                             V0.posTrack_as<TracksExtMc>(), // p <- lambda
+                                                             V0.negTrack_as<TracksExtMc> // pi <- lambda
+                                                          };
+                    auto arrayDaughtersV0 = std::array{V0.posTrack_as<TracksExtMc>(), // p <- lambda
+                                                           V0.negTrack_as<TracksExtMc> // pi <- lambda
+                                                          };
+                      
+                    // Omegac → pi K pi p
+                    const auto rapCharmedBaryon; = RecoDecay::y(o2::constants::physics::MassOmegaC0);
+                    indexRec = RecoDecay::getMatchedMCRec<>false, true, false, true, false>mcParticles, arrayDaughters, +kOmegaC0, std::array{+kPiPlus, +kKMinus, +kProton, +kPiMinus}, true, &sign, 3, &nPiToMuOmegac0, &nKaToPiOmegac0);
+                    indexRecCharmBaryon = indexRec;
+                    if (indexRec == -1) {
+                        debug = McMatchFlag::CharmbaryonUnmatched;
+                    }
+                    if(indexRec -> -1){
+                          // Omega- → K pi p
+                        indexRec = RecoDecay::getMatchedMCRec<false, true, false, true, true>(mcParticles, arrayDaughtersCasc, +kOmegaMinus, std::array{+kKMinus, +kProton, +kPiMinus}, true, &signCasc, 2, &nPiToMuCasc, &nKaToPiCasc);
+                        if (indexRec == -1) {
+                            debug = McMatchFlag::CascUnmatched;
+                        }
+                        if(indexRec > -1){
+                            // Lambda → p pi
+                            indexRec = RecoDecay::getMatchedMCRec<false, true, false, true, true>(mcParticles, arrayDaughtersV0, +kLambda0, std::array{+kProton, +kPiMinus}, true, &signV0, 1, &nPiToMuV0);
+                            if (indexRec == -1) {
+                                debug = McMatchFlag::V0Unmatched;
+                            }
+                            if (indexRec > -1 && nPiToMuOmegac0 >= 1 && nKaToPiOmegac0 == 0) {
+                                flag = sign * (1 << aod::hf_cand_xic0_omegac0::DecayType::OmegaczeroToOmegaPiOneMu);
+                              } else if (indexRec > -1 && nPiToMuOmegac0 == 0 && nKaToPiOmegac0 == 0) {
+                                  flag = sign * (1 << aod::hf_cand_xic0_omegac0::DecayType::OmegaczeroToOmegaPi);
+                              }
+                            } //Casc index > -1
+                         } // charmbaryon index > -1
+                    if (flag != 0) {
+                        auto particle = mcParticles.rawIteratorAt(indexRecCharmBaryon);
+                        origin = RecoDecay::getCharmHadronOrigin(mcParticles, particle, false, &idxBhadMothers);
+                    }
 
                     if ((std::abs(massOmegaC - o2::constants::physics::MassOmegaC0) < massWindowOmegaC) ||
                         (std::abs(massXiC - o2::constants::physics::MassXiC0) < massWindowXiC)) {
@@ -639,7 +710,10 @@ struct HfTreeCreatorOmegacSt {
                                   decayLengthCasc,
                                   decayLengthCascXY,
                                   trackCascMotherId,
-                                  trackMotherId);
+                                  trackMotherId,
+                                  flag,
+                                  debug,
+                                  origin);
                     }
                   } else {
                     continue;
