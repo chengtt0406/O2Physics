@@ -10,12 +10,12 @@
 // or submit itself to any jurisdiction.
 
 /// \file treeCreatorOmegacSt.cxx
-/// \brief Task to reconstruct Ωc from strangeness-tracked Ω and pion/kaon
+/// \brief Task to reconstruct Ωc/Ξc from strangeness-tracked Ω and pion/kaon
 ///
 /// \author Jochen Klein
 /// \author Tiantian Cheng
 
-#include "PWGHF/DataModel/TrackIndexSkimmingTables.h"
+#include "PWGHF/DataModel/CandidateReconstructionTables.h"
 #include "PWGHF/Utils/utilsTrkCandHf.h"
 #include "PWGLF/DataModel/LFStrangenessTables.h"
 
@@ -28,6 +28,7 @@
 #include "Common/DataModel/PIDResponseTOF.h"
 #include "Common/DataModel/PIDResponseTPC.h"
 #include "Common/DataModel/TrackSelectionTables.h"
+#include "Common/Tools/TrackTuner.h"
 
 #include <CCDB/BasicCCDBManager.h>
 #include <CommonConstants/PhysicsConstants.h>
@@ -229,6 +230,10 @@ struct HfTreeCreatorOmegacSt {
   Produces<aod::HfStChBars> outputTable;
   Produces<aod::HfStChBarGens> outputTableGen;
 
+  TrackTuner trackTunerObj;
+  Configurable<bool> useTrackTuner{"useTrackTuner", false, "Apply track tuner corrections to MC"};
+  Configurable<int> trackTunerConfigSource{"trackTunerConfigSource", aod::track_tuner::InputString, "1: input string; 2: TrackTuner Configurables"};
+  Configurable<std::string> trackTunerParams{"trackTunerParams", "debugInfo=0|updateTrackDCAs=0|updateTrackCovMat=1|updateCurvature=0|updateCurvatureIU=0|updatePulls=0|isInputFileFromCCDB=1|pathInputFile=Users/m/mfaggin/test/inputsTrackTuner/PbPb2022|nameInputFile=trackTuner_DataLHC22sPass5_McLHC22l1b2_run529397.root|pathFileQoverPt=Users/h/hsharma/qOverPtGraphs|nameFileQoverPt=D0sigma_Data_removal_itstps_MC_LHC22b1b.root|usePvRefitCorrections=0|qOverPtMC=-1.|qOverPtData=-1.|autoDetectDcaCalib=0", "TrackTuner parameter initialization (format: <name>=<value>|<name>=<value>)"};
   Configurable<int> materialCorrectionType{"materialCorrectionType", static_cast<int>(o2::base::Propagator::MatCorrType::USEMatCorrLUT), "Type of material correction"};
   Configurable<std::string> ccdbUrl{"ccdbUrl", "http://alice-ccdb.cern.ch", "url of the ccdb repository"};
   Configurable<std::string> grpMagPath{"grpMagPath", "GLO/Config/GRPMagField", "CCDB path of the GRPMagField object"};
@@ -283,7 +288,12 @@ struct HfTreeCreatorOmegacSt {
   PresliceUnsorted<aod::TrackAssoc> trackIndicesPerCollision = aod::track_association::collisionId;
   PresliceUnsorted<aod::AssignedTrackedCascades> assignedTrackedCascadesPerCollision = aod::track::collisionId;
 
-  std::shared_ptr<TH1> hCandidatesPrPi, hCandidatesV0Pi, hCandidatesCascPiOrK;
+  std::shared_ptr<TH1> hCandidatesPrPi, hCandidatesV0Bachelor, hCandidatesCascPiOrK;
+
+  ConfigurableAxis axisPtQA{"axisPtQA", {VARIABLE_WIDTH, 0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f, 1.1f, 1.2f, 1.3f, 1.4f, 1.5f, 1.6f, 1.7f, 1.8f, 1.9f, 2.0f, 2.2f, 2.4f, 2.6f, 2.8f, 3.0f, 3.2f, 3.4f, 3.6f, 3.8f, 4.0f, 4.4f, 4.8f, 5.2f, 5.6f, 6.0f, 6.5f, 7.0f, 7.5f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 17.0f, 19.0f, 21.0f, 23.0f, 25.0f, 30.0f, 35.0f, 40.0f, 50.0f}, "pt axis for QA histograms"};
+  AxisSpec axisBinsDCACasc = {400, -2.0f, 2.0f, "#it{dca} (cm)"};
+  AxisSpec axisBinsDCAPiOrK = {500, -1.0f, 1.0f, "#it{dca} (cm)"};
+
   HistogramRegistry registry{
     "registry",
     {
@@ -310,10 +320,19 @@ struct HfTreeCreatorOmegacSt {
       {"hMassOmegacGen", "inv. mass #Omega + #pi (from MC);inv. mass (GeV/#it{c}^{2})", {HistType::kTH1D, {{400, 1.5, 3.}}}},
       {"hPtVsMassOmega", "#Omega mass;p_{T} (GeV/#it{c});m (GeV/#it{c}^3)", {HistType::kTH2D, {{200, 0., 10.}, {1000, 1., 3.}}}},
       {"hDeltaPtVsPt", "Delta pt;p_{T} (GeV/#it{c});#Delta p_{T} / p_{T}", {HistType::kTH2D, {{200, 0., 10.}, {200, -1., 1.}}}},
+      {"hDCAxyVsPt_Casc_Rec", "DCAxy vs Pt (Casc, reco)", {HistType::kTH2F, {axisBinsDCACasc, axisPtQA}}},
+      {"hDCAxyVsPt_Casc_MC", "DCAxy vs Pt (Casc, MC)", {HistType::kTH2F, {axisBinsDCACasc, axisPtQA}}},
+      {"hDCAzVsPt_Casc_Rec", "DCAz vs Pt (Casc, reco)", {HistType::kTH2F, {axisBinsDCACasc, axisPtQA}}},
+      {"hDCAzVsPt_Casc_MC", "DCAz vs Pt (Casc, MC)", {HistType::kTH2F, {axisBinsDCACasc, axisPtQA}}},
+      {"hDCAxyVsPt_PiOrK_Rec", "DCAxy vs Pt (Pi/K, Rec)", {HistType::kTH2F, {axisBinsDCAPiOrK, axisPtQA}}},
+      {"hDCAxyVsPt_PiOrK_MC", "DCAxy vs Pt (Pi/K, MC)", {HistType::kTH2F, {axisBinsDCAPiOrK, axisPtQA}}},
+      {"hDCAzVsPt_PiOrK_Rec", "DCAz vs Pt (Pi/K, Rec)", {HistType::kTH2F, {axisBinsDCAPiOrK, axisPtQA}}},
+      {"hDCAzVsPt_PiOrK_MC", "DCAz vs Pt (Pi/K, MC)", {HistType::kTH2F, {axisBinsDCAPiOrK, axisPtQA}}},
     }};
 
   Zorro zorro;
   OutputObj<ZorroSummary> zorroSummary{"zorroSummary"};
+  OutputObj<TH1D> trackTunedTracks{TH1D("trackTunedTracks", "", 2, 0.5, 2.5), OutputObjHandlingPolicy::AnalysisObject};
 
   void init(InitContext const&)
   {
@@ -336,10 +355,10 @@ struct HfTreeCreatorOmegacSt {
 
     /// candidate monitoring
     hCandidatesPrPi = registry.add<TH1>("hCandidatesPrPi", "Pr-Pi candidates counter", {HistType::kTH1D, {axisCands}});
-    hCandidatesV0Pi = registry.add<TH1>("hCandidatesV0Pi", "V0-Pi candidates counter", {HistType::kTH1D, {axisCands}});
+    hCandidatesV0Bachelor = registry.add<TH1>("hCandidatesV0Bachelor", "V0-Pi/K candidates counter", {HistType::kTH1D, {axisCands}});
     hCandidatesCascPiOrK = registry.add<TH1>("hCandidatesCascPiOrK", "Casc-Pi/K candidates counter", {HistType::kTH1D, {axisCands}});
     setLabelHistoCands(hCandidatesPrPi);
-    setLabelHistoCands(hCandidatesV0Pi);
+    setLabelHistoCands(hCandidatesV0Bachelor);
     setLabelHistoCands(hCandidatesCascPiOrK);
   }
 
@@ -465,7 +484,30 @@ struct HfTreeCreatorOmegacSt {
           LOG(fatal) << "Got nullptr from CCDB for path " << grpMagPath << " of object GRPMagField and " << grpPath << " of object GRPObject for timestamp " << timestamp;
         }
         df2.setBz(bz);
+
+        /// Track initialization
+        if (useTrackTuner) {
+          std::string outputStringParams = "";
+          switch (trackTunerConfigSource) {
+            case aod::track_tuner::InputString:
+              outputStringParams = trackTunerObj.configParams(trackTunerParams);
+              break;
+            case aod::track_tuner::Configurables:
+              outputStringParams = trackTunerObj.configParams();
+              break;
+
+            default:
+              LOG(fatal) << "TrackTuner configuration source not defined. Fix it! (Supported options: input string (1); Configurables (2))";
+              break;
+          }
+
+          trackTunerObj.getDcaGraphs();
+          trackTunedTracks->SetTitle(outputStringParams.c_str());
+          trackTunedTracks->GetXaxis()->SetBinLabel(1, "tracked Casc");
+          trackTunedTracks->GetXaxis()->SetBinLabel(2, "tracks π/K");
+        }
       }
+
       uint32_t toiMask = 0;
       if (skimmedProcessing) {
         bool const sel = zorro.isSelected(bc.globalBC());
@@ -487,6 +529,7 @@ struct HfTreeCreatorOmegacSt {
       o2::dataformats::DCA impactParameterCasc;
       for (const auto& trackedCascade : groupedTrackedCascades) {
         const auto trackCasc = trackedCascade.track_as<TracksType>();
+        auto trackParCovCasc = getTrackParCov(trackCasc);
         int trackCascMotherId = -1;
         if constexpr (std::is_same<TracksType, TracksExtMc>::value) {
           if (trackCasc.has_mcParticle() && trackCasc.mcParticle().has_mothers()) {
@@ -495,7 +538,21 @@ struct HfTreeCreatorOmegacSt {
             }
           }
         }
-        auto trackParCovCasc = getTrackParCov(trackCasc);
+        //---- tune
+        if constexpr (std::is_same<TracksType, TracksExtMc>::value) {
+          if (useTrackTuner && trackCasc.has_mcParticle()) {
+            impactParameterCasc.set(999.f, 999.f, 999.f, 999.f, 999.f);
+            trackTunedTracks->Fill(1); // bin1: tracked cascade tuned
+            LOG(debug) << "Applying TrackTuner to tracked cascade";
+            try {
+              const auto mcCasc = trackCasc.mcParticle();
+              trackTunerObj.tuneTrackParams(mcCasc, trackParCovCasc, matCorr, &impactParameterCasc, trackTunedTracks);
+            } catch (const std::runtime_error& error) {
+              LOG(warn) << "TrackTuner failed on cascade (globalIndex=" << trackCasc.globalIndex() << "): " << error.what();
+            }
+          }
+        }
+
         if (bzOnly) {
           o2::base::Propagator::Instance()->propagateToDCA(primaryVertex, trackParCovCasc, bz, 2.f, matCorr, &impactParameterCasc);
         } else {
@@ -540,17 +597,17 @@ struct HfTreeCreatorOmegacSt {
         const auto massV0 = RecoDecay::m(momentaV0Daughters, massesV0Daughters);
 
         o2::track::TrackParCov const trackParCovV0 = df2.createParentTrackParCov(0);
-        hCandidatesV0Pi->Fill(SVFitting::BeforeFit);
+        hCandidatesV0Bachelor->Fill(SVFitting::BeforeFit);
         try {
           if (!df2.process(trackParCovV0, getTrackParCov(bachelor))) {
             continue;
           }
         } catch (const std::runtime_error& error) {
           LOG(info) << "Run time error found: " << error.what() << ". DCAFitterN for V0-bachelor cannot work, skipping the candidate.";
-          hCandidatesV0Pi->Fill(SVFitting::Fail);
+          hCandidatesV0Bachelor->Fill(SVFitting::Fail);
           continue;
         }
-        hCandidatesV0Pi->Fill(SVFitting::FitOk);
+        hCandidatesV0Bachelor->Fill(SVFitting::FitOk);
 
         const auto& secondaryVertex = df2.getPCACandidate();
         const auto decayLengthCasc = RecoDecay::distance(secondaryVertex, primaryVertexPos);
@@ -592,8 +649,8 @@ struct HfTreeCreatorOmegacSt {
             std::array<std::array<float, 3>, NDaughters> momenta{};
 
             auto trackParCovPr = getTrackParCov(v0TrackPr);
-            auto trackParCovKa = getTrackParCov(v0TrackPi);
-            auto trackParCovPi = getTrackParCov(bachelor);
+            auto trackParCovPi = getTrackParCov(v0TrackPi);
+            auto trackParCovKa = getTrackParCov(bachelor);
             o2::dataformats::DCA impactParameterPr;
             o2::dataformats::DCA impactParameterKa;
             o2::dataformats::DCA impactParameterPi;
@@ -607,8 +664,10 @@ struct HfTreeCreatorOmegacSt {
               o2::base::Propagator::Instance()->propagateToDCABxByBz(primaryVertex, trackParCovPi, 2.f, matCorr, &impactParameterPi);
             }
 
+            o2::dataformats::DCA impactParameterPionOrKaon;
             for (const auto& trackId : groupedTrackIds) {
               const auto track = trackId.template track_as<TracksType>();
+              auto trackParCovPionOrKaon = getTrackParCov(track);
               if (track.globalIndex() == v0TrackPr.globalIndex() ||
                   track.globalIndex() == v0TrackPi.globalIndex() ||
                   track.globalIndex() == bachelor.globalIndex()) {
@@ -630,15 +689,28 @@ struct HfTreeCreatorOmegacSt {
                     }
                   }
                 }
-                auto trackParCovCasc = getTrackParCov(trackCasc);
-                auto trackParCovPionOrKaon = getTrackParCov(track);
-                o2::dataformats::DCA impactParameterPion;
-                if (bzOnly) {
-                  o2::base::Propagator::Instance()->propagateToDCA(primaryVertex, trackParCovPionOrKaon, bz, 2.f, matCorr, &impactParameterPion);
-                } else {
-                  o2::base::Propagator::Instance()->propagateToDCABxByBz(primaryVertex, trackParCovPionOrKaon, 2.f, matCorr, &impactParameterPion);
+
+                //---- tune for pion/kaon
+                if constexpr (std::is_same<TracksType, TracksExtMc>::value) {
+                  if (useTrackTuner && track.has_mcParticle()) {
+                    impactParameterPionOrKaon.set(999.f, 999.f, 999.f, 999.f, 999.f);
+                    trackTunedTracks->Fill(2); // bin2: pion/kaon tuned
+                    LOG(debug) << "Applying TrackTuner to pion/kaon (Omegac daughter)";
+                    try {
+                      trackTunerObj.tuneTrackParams(track.mcParticle(), trackParCovPionOrKaon, matCorr, &impactParameterPionOrKaon, trackTunedTracks);
+                    } catch (const std::runtime_error& error) {
+                      LOG(warn) << "TrackTuner failed on pion/kaon (globalIndex=" << track.globalIndex() << "): " << error.what();
+                    }
+                  }
                 }
 
+                auto trackParCovCasc = getTrackParCov(trackCasc);
+                //   o2::dataformats::DCA impactParameterPion;
+                if (bzOnly) {
+                  o2::base::Propagator::Instance()->propagateToDCA(primaryVertex, trackParCovPionOrKaon, bz, 2.f, matCorr, &impactParameterPionOrKaon);
+                } else {
+                  o2::base::Propagator::Instance()->propagateToDCABxByBz(primaryVertex, trackParCovPionOrKaon, 2.f, matCorr, &impactParameterPionOrKaon);
+                }
                 hCandidatesCascPiOrK->Fill(SVFitting::BeforeFit);
                 try {
                   auto decayLengthUntracked = -1.;
@@ -760,10 +832,10 @@ struct HfTreeCreatorOmegacSt {
                                   std::sqrt(impactParameterCasc.getSigmaY2()),
                                   impactParameterCasc.getZ(),
                                   std::sqrt(impactParameterCasc.getSigmaZ2()),
-                                  impactParameterPion.getY(),
-                                  std::sqrt(impactParameterPion.getSigmaY2()),
-                                  impactParameterPion.getZ(),
-                                  std::sqrt(impactParameterPion.getSigmaZ2()),
+                                  impactParameterPionOrKaon.getY(),
+                                  std::sqrt(impactParameterPionOrKaon.getSigmaY2()),
+                                  impactParameterPionOrKaon.getZ(),
+                                  std::sqrt(impactParameterPionOrKaon.getSigmaZ2()),
                                   impactParameterPr.getY(),
                                   impactParameterPr.getZ(),
                                   impactParameterKa.getY(),
@@ -792,6 +864,27 @@ struct HfTreeCreatorOmegacSt {
                   continue;
                 }
                 hCandidatesCascPiOrK->Fill(SVFitting::FitOk);
+                //---- QA fill for track tuner
+                if constexpr (std::is_same<TracksType, TracksExtMc>::value) {
+                  if (useTrackTuner) {
+                    //---- Cascade QA
+                    if (trackCasc.has_mcParticle()) {
+                      const auto& mcCasc = trackCasc.mcParticle();
+                      registry.fill(HIST("hDCAxyVsPt_Casc_Rec"), impactParameterCasc.getY(), trackParCovCasc.getPt());
+                      registry.fill(HIST("hDCAxyVsPt_Casc_MC"), impactParameterCasc.getY(), mcCasc.pt());
+                      registry.fill(HIST("hDCAzVsPt_Casc_Rec"), impactParameterCasc.getZ(), trackParCovCasc.getPt());
+                      registry.fill(HIST("hDCAzVsPt_Casc_MC"), impactParameterCasc.getZ(), mcCasc.pt());
+                    }
+                    //---- Pion/Kaon QA
+                    if (track.has_mcParticle()) {
+                      const auto& mcPiK = track.mcParticle();
+                      registry.fill(HIST("hDCAxyVsPt_PiOrK_Rec"), impactParameterPionOrKaon.getY(), trackParCovPionOrKaon.getPt());
+                      registry.fill(HIST("hDCAxyVsPt_PiOrK_MC"), impactParameterPionOrKaon.getY(), mcPiK.pt());
+                      registry.fill(HIST("hDCAzVsPt_PiOrK_Rec"), impactParameterPionOrKaon.getZ(), trackParCovPionOrKaon.getPt());
+                      registry.fill(HIST("hDCAzVsPt_PiOrK_MC"), impactParameterPionOrKaon.getZ(), mcPiK.pt());
+                    }
+                  }
+                }
               }
             }
           }
